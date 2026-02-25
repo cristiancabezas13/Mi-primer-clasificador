@@ -30,17 +30,13 @@ from sklearn.metrics import (
     classification_report,
     roc_curve,
     auc,
-    RocCurveDisplay,
 )
 
 
 # ---------------------------
 # Config Streamlit
 # ---------------------------
-st.set_page_config(
-    page_title="Iris Classifier Lab",
-    layout="wide",
-)
+st.set_page_config(page_title="Iris Classifier Lab", layout="wide")
 
 
 # ---------------------------
@@ -62,46 +58,55 @@ class ModelSpec:
     supports_proba: bool
 
 
-def get_model_specs(needs_proba: bool, params: Dict[str, Any]) -> Dict[str, ModelSpec]:
+def _safe_logreg(params: Dict[str, Any]) -> LogisticRegression:
     """
-    Devuelve un dict de modelos configurados.
-    Si necesitas ROC, algunos modelos requieren probability=True (SVM).
+    Compatibilidad sklearn:
+    - En versiones nuevas (>=1.8) 'multi_class' ya no existe.
+    - En versiones anteriores puede existir (o estar deprecado).
     """
-    # Logistic Regression
-    lr = LogisticRegression(
-        C=params.get("lr_C", 1.0),
-        max_iter=params.get("lr_max_iter", 1000),
+    base_kwargs = dict(
+        C=float(params.get("lr_C", 1.0)),
+        max_iter=int(params.get("lr_max_iter", 1000)),
         solver="lbfgs",
-        multi_class="auto",
     )
+    # Intentar con multi_class si la versión lo soporta
+    try:
+        return LogisticRegression(**base_kwargs, multi_class="auto")
+    except TypeError:
+        return LogisticRegression(**base_kwargs)
+
+
+def get_model_specs(needs_proba: bool, params: Dict[str, Any]) -> Dict[str, ModelSpec]:
+    # Logistic Regression (compat)
+    lr = _safe_logreg(params)
 
     # SVM
-    svm_probability = True if needs_proba else params.get("svm_probability", False)
+    svm_probability = True if needs_proba else bool(params.get("svm_probability", False))
     svm = SVC(
-        C=params.get("svm_C", 1.0),
-        kernel=params.get("svm_kernel", "rbf"),
-        gamma=params.get("svm_gamma", "scale"),
+        C=float(params.get("svm_C", 1.0)),
+        kernel=str(params.get("svm_kernel", "rbf")),
+        gamma=str(params.get("svm_gamma", "scale")),
         probability=svm_probability,
     )
 
     # KNN
     knn = KNeighborsClassifier(
-        n_neighbors=params.get("knn_k", 5),
-        weights=params.get("knn_weights", "uniform"),
+        n_neighbors=int(params.get("knn_k", 5)),
+        weights=str(params.get("knn_weights", "uniform")),
     )
 
     # Decision Tree
     dt = DecisionTreeClassifier(
         max_depth=params.get("dt_max_depth", None),
-        min_samples_split=params.get("dt_min_samples_split", 2),
-        random_state=params.get("random_state", 42),
+        min_samples_split=int(params.get("dt_min_samples_split", 2)),
+        random_state=int(params.get("random_state", 42)),
     )
 
     # Random Forest
     rf = RandomForestClassifier(
-        n_estimators=params.get("rf_n_estimators", 200),
+        n_estimators=int(params.get("rf_n_estimators", 200)),
         max_depth=params.get("rf_max_depth", None),
-        random_state=params.get("random_state", 42),
+        random_state=int(params.get("random_state", 42)),
     )
 
     # Naive Bayes
@@ -113,7 +118,7 @@ def get_model_specs(needs_proba: bool, params: Dict[str, Any]) -> Dict[str, Mode
     specs = {
         "Logistic Regression": ModelSpec("Logistic Regression", lr, supports_proba=True),
         "SVM": ModelSpec("SVM", svm, supports_proba=svm_probability),
-        "KNN": ModelSpec("KNN", knn, supports_proba=True),  # KNN sí tiene predict_proba
+        "KNN": ModelSpec("KNN", knn, supports_proba=True),
         "Decision Tree": ModelSpec("Decision Tree", dt, supports_proba=True),
         "Random Forest": ModelSpec("Random Forest", rf, supports_proba=True),
         "Naive Bayes (Gaussian)": ModelSpec("Naive Bayes (Gaussian)", nb, supports_proba=True),
@@ -137,31 +142,21 @@ def make_2d_representation(
     use_scaler_for_2d: bool,
     random_state: int,
 ) -> Tuple[np.ndarray, Optional[Pipeline], str]:
-    """
-    Retorna X2 (n,2) y un transformador (opcional) para el modo PCA.
-    - mode_2d = "Features" o "PCA"
-    """
     if mode_2d == "PCA (2 componentes)":
-        # Pipeline para estandarizar y PCA a 2D
         steps = []
         if use_scaler_for_2d:
             steps.append(("scaler", StandardScaler()))
-        steps.append(("pca", PCA(n_components=2, random_state=random_state)))
+        steps.append(("pca", PCA(n_components=2)))
         transformer = Pipeline(steps)
         X2 = transformer.fit_transform(X.values)
-        xlab, ylab = "PC1", "PC2"
-        return X2, transformer, f"{xlab} vs {ylab}"
+        return X2, transformer, "PC1 vs PC2"
     else:
         f1, f2 = two_features
         X2 = X[[f1, f2]].values
         return X2, None, f"{f1} vs {f2}"
 
 
-def compute_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    average: str = "macro",
-) -> Dict[str, float]:
+def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, average: str = "macro") -> Dict[str, float]:
     return {
         "Accuracy": float(accuracy_score(y_true, y_pred)),
         "Precision": float(precision_score(y_true, y_pred, average=average, zero_division=0)),
@@ -180,26 +175,16 @@ def plot_confusion(y_true, y_pred, class_names) -> plt.Figure:
     return fig
 
 
-def plot_multiclass_roc(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    class_names: list,
-) -> plt.Figure:
-    """
-    y_score: (n_samples, n_classes) con probabilidades o scores.
-    """
+def plot_multiclass_roc(y_true: np.ndarray, y_score: np.ndarray, class_names: list) -> plt.Figure:
     n_classes = len(class_names)
     y_bin = label_binarize(y_true, classes=list(range(n_classes)))
 
     fig, ax = plt.subplots()
-
-    # ROC por clase
     for i in range(n_classes):
         fpr, tpr, _ = roc_curve(y_bin[:, i], y_score[:, i])
         roc_auc = auc(fpr, tpr)
         ax.plot(fpr, tpr, label=f"{class_names[i]} (AUC={roc_auc:.3f})")
 
-    # Micro-average
     fpr_micro, tpr_micro, _ = roc_curve(y_bin.ravel(), y_score.ravel())
     roc_auc_micro = auc(fpr_micro, tpr_micro)
     ax.plot(fpr_micro, tpr_micro, linestyle="--", label=f"Micro-average (AUC={roc_auc_micro:.3f})")
@@ -223,27 +208,21 @@ def plot_decision_boundary_2d(
     title: str,
     mesh_step: float = 0.02,
 ) -> plt.Figure:
-    # Rango de malla
     x_min, x_max = X2_train[:, 0].min() - 0.6, X2_train[:, 0].max() + 0.6
     y_min, y_max = X2_train[:, 1].min() - 0.6, X2_train[:, 1].max() + 0.6
     xx, yy = np.meshgrid(np.arange(x_min, x_max, mesh_step), np.arange(y_min, y_max, mesh_step))
     grid = np.c_[xx.ravel(), yy.ravel()]
 
-    # Predicción sobre la malla
     Z = model_2d.predict(grid).reshape(xx.shape)
 
     fig, ax = plt.subplots()
     ax.contourf(xx, yy, Z, alpha=0.25)
 
-    # puntos train y test
-    scatter_train = ax.scatter(X2_train[:, 0], X2_train[:, 1], c=y_train, marker="o", edgecolors="k", label="Train")
-    scatter_test = ax.scatter(X2_test[:, 0], X2_test[:, 1], c=y_test, marker="^", edgecolors="k", label="Test")
+    train_sc = ax.scatter(X2_train[:, 0], X2_train[:, 1], c=y_train, marker="o", edgecolors="k", label="Train")
+    test_sc = ax.scatter(X2_test[:, 0], X2_test[:, 1], c=y_test, marker="^", edgecolors="k", label="Test")
 
-    # Leyenda de clases (manual)
-    handles = []
-    for i, cname in enumerate(class_names):
-        handles.append(plt.Line2D([0], [0], marker="o", linestyle="", label=cname))
-    ax.legend(handles=handles + [scatter_train, scatter_test], loc="best")
+    handles = [plt.Line2D([0], [0], marker="o", linestyle="", label=cname) for cname in class_names]
+    ax.legend(handles=handles + [train_sc, test_sc], loc="best")
 
     ax.set_title(title)
     ax.set_xlabel("Dim 1")
@@ -270,7 +249,6 @@ with st.expander("📌 Ver dataset (preview)"):
 
 # Sidebar: configuración general
 st.sidebar.header("⚙️ Configuración")
-
 random_state = st.sidebar.number_input("Random state", min_value=0, max_value=9999, value=42, step=1)
 test_size = st.sidebar.slider("Test size", min_value=0.1, max_value=0.5, value=0.25, step=0.05)
 use_scaler = st.sidebar.checkbox("Estandarizar (StandardScaler)", value=True)
@@ -283,7 +261,6 @@ train_mode = st.sidebar.radio(
 
 st.sidebar.divider()
 st.sidebar.subheader("📈 Visualización 2D (frontera)")
-
 mode_2d = st.sidebar.selectbox("Representación 2D", ["Features (2 columnas)", "PCA (2 componentes)"])
 
 two_features = st.sidebar.multiselect(
@@ -295,19 +272,21 @@ two_features = st.sidebar.multiselect(
 
 use_scaler_for_2d = st.sidebar.checkbox("Estandarizar antes de PCA/2D", value=True)
 
+# Si no hay 2 features elegidas, no frenamos la app: usamos 2 por defecto
+if mode_2d == "Features (2 columnas)" and len(two_features) != 2:
+    st.sidebar.warning("Selecciona exactamente 2 features. Usando 2 por defecto para continuar.")
+    two_features = [X.columns[0], X.columns[1]]
+
 st.sidebar.divider()
 st.sidebar.subheader("🤖 Modelo y métricas")
-
 show_roc = st.sidebar.checkbox("Mostrar ROC (multiclase)", value=True)
 show_cv = st.sidebar.checkbox("Mostrar validación cruzada (5-fold)", value=False)
-
 metric_average = st.sidebar.selectbox("Promedio para Precision/Recall/F1", ["macro", "weighted"], index=0)
 
 # Parámetros del modelo
 st.sidebar.divider()
 st.sidebar.subheader("🔧 Hiperparámetros")
-
-params: Dict[str, Any] = {"random_state": random_state}
+params: Dict[str, Any] = {"random_state": int(random_state)}
 
 model_choice = st.sidebar.selectbox(
     "Selecciona un modelo",
@@ -350,12 +329,6 @@ elif model_choice == "Random Forest":
 # ---------------------------
 # Preparar datasets
 # ---------------------------
-# Verificación simple para 2 features cuando aplique
-if mode_2d == "Features (2 columnas)" and len(two_features) != 2:
-    st.warning("Selecciona exactamente 2 features para la visualización 2D.")
-    st.stop()
-
-# Split principal para métricas
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
@@ -364,19 +337,17 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y,
 )
 
-# 2D data (para frontera)
-mode_2d_internal = "PCA (2 componentes)" if mode_2d == "PCA (2 componentes)" else "Features"
-two_feats_tuple = (two_features[0], two_features[1]) if len(two_features) == 2 else (X.columns[0], X.columns[1])
+two_feats_tuple = (two_features[0], two_features[1])
+mode_2d_key = "PCA (2 componentes)" if mode_2d == "PCA (2 componentes)" else "Features"
 
 X2_all, transformer_2d, rep_title = make_2d_representation(
     X=X,
-    mode_2d=("PCA (2 componentes)" if mode_2d == "PCA (2 componentes)" else "Features"),
+    mode_2d=mode_2d_key,
     two_features=two_feats_tuple,
     use_scaler_for_2d=use_scaler_for_2d,
     random_state=int(random_state),
 )
 
-# Split 2D consistente con split principal (usamos índices)
 train_idx = X_train.index.to_numpy()
 test_idx = X_test.index.to_numpy()
 X2_train = X2_all[train_idx]
@@ -386,13 +357,10 @@ X2_test = X2_all[test_idx]
 # ---------------------------
 # Entrenar modelos
 # ---------------------------
-# ¿Necesitamos proba? (para ROC)
 needs_proba = bool(show_roc)
-
 specs = get_model_specs(needs_proba=needs_proba, params=params)
 spec = specs[model_choice]
 
-# Modelo para métricas
 if train_mode == "4 features (mejor desempeño)":
     pipeline_main = make_pipeline(spec.estimator, use_scaler=use_scaler)
     pipeline_main.fit(X_train, y_train)
@@ -404,9 +372,7 @@ if train_mode == "4 features (mejor desempeño)":
             y_score = pipeline_main.predict_proba(X_test)
         except Exception:
             y_score = None
-
 else:
-    # Entrena con 2D (frontera y métricas coinciden)
     pipeline_main = make_pipeline(spec.estimator, use_scaler=use_scaler)
     pipeline_main.fit(X2_train, y_train.to_numpy())
     y_pred = pipeline_main.predict(X2_test)
@@ -419,7 +385,6 @@ else:
             y_score = None
 
 # Modelo 2D exclusivo para frontera si entrenas con 4 features
-pipeline_2d = None
 if train_mode == "4 features (mejor desempeño)":
     pipeline_2d = make_pipeline(spec.estimator, use_scaler=use_scaler)
     pipeline_2d.fit(X2_train, y_train.to_numpy())
@@ -450,23 +415,19 @@ with tab1:
 
     if train_mode == "4 features (mejor desempeño)":
         st.info(
-            "Nota: Estás entrenando el modelo principal con **4 features** para mejores métricas. "
-            "La **frontera de decisión** se calcula con un **modelo 2D** separado (solo para visualizar)."
+            "Entrenas el modelo principal con **4 features** (mejores métricas). "
+            "La **frontera de decisión** se muestra con un modelo **2D** separado."
         )
     else:
-        st.success("En modo 2D, las métricas y la frontera corresponden al mismo modelo y representación.")
+        st.success("En modo 2D, métricas y frontera corresponden al mismo modelo/representación.")
 
     st.write("**Features del dataset:**", list(X.columns))
-    if mode_2d == "Features (2 columnas)":
-        st.write("**2D usando:**", list(two_feats_tuple))
-    else:
-        st.write("**2D usando:** PCA (2 componentes)")
+    st.write("**2D:**", rep_title)
 
 with tab2:
     st.subheader("Métricas de desempeño")
 
-    # Métricas
-    y_true_np = y_test.to_numpy() if train_mode == "4 features (mejor desempeño)" else y_test.to_numpy()
+    y_true_np = y_test.to_numpy()
     y_pred_np = np.asarray(y_pred)
 
     metrics = compute_metrics(y_true_np, y_pred_np, average=metric_average)
@@ -477,27 +438,20 @@ with tab2:
     m3.metric("Recall", f"{metrics['Recall']:.3f}")
     m4.metric("F1", f"{metrics['F1']:.3f}")
 
-    # Confusion matrix
     fig_cm = plot_confusion(y_true_np, y_pred_np, class_names)
     st.pyplot(fig_cm, use_container_width=True)
 
-    # Classification report
     with st.expander("📄 Ver classification_report"):
         rep = classification_report(y_true_np, y_pred_np, target_names=class_names, zero_division=0)
         st.text(rep)
 
-    # Cross-validation
     if show_cv:
         st.subheader("Validación cruzada (5-fold)")
         try:
-            if train_mode == "4 features (mejor desempeño)":
-                X_for_cv = X.values
-            else:
-                X_for_cv = X2_all
-
+            X_for_cv = X.values if train_mode == "4 features (mejor desempeño)" else X2_all
             pipe_cv = make_pipeline(spec.estimator, use_scaler=use_scaler)
             scores = cross_val_score(pipe_cv, X_for_cv, y.values, cv=5, scoring="accuracy")
-            st.write(f"Accuracy CV promedio: **{scores.mean():.3f}**  |  Desv: **{scores.std():.3f}**")
+            st.write(f"Accuracy CV promedio: **{scores.mean():.3f}** | Desv: **{scores.std():.3f}**")
             st.write("Scores:", np.round(scores, 3))
         except Exception as e:
             st.warning(f"No se pudo calcular CV: {e}")
@@ -510,7 +464,7 @@ with tab3:
     else:
         if y_score is None:
             st.warning(
-                "Este modelo/configuración no pudo generar probabilidades (predict_proba) para ROC. "
+                "No se pudieron generar probabilidades para ROC. "
                 "Tip: en SVM activa probability=True."
             )
         else:
@@ -522,12 +476,10 @@ with tab3:
 
 with tab4:
     st.subheader("Frontera de decisión (2D)")
-
     st.caption(
-        "La frontera de decisión es 2D. Si entrenas con 4 features, aquí se entrena un modelo 2D separado solo para visualizar."
+        "La frontera es 2D. Si entrenas con 4 features, aquí se usa un modelo 2D solo para visualizar."
     )
 
-    # Gráfico de frontera
     try:
         title = f"Frontera de decisión - {spec.name} ({rep_title})"
         fig_db = plot_decision_boundary_2d(
